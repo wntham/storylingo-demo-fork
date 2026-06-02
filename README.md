@@ -4,6 +4,8 @@ A voice-first language learning app for kids (ages 3-10) that uses fairy tales a
 
 **This repo is a teaching tool** — use it to learn how to clone a GitHub repo, configure environment variables, and deploy a full-stack app to Railway.
 
+> **New here?** Start with the [Complete Setup Guide](SETUP_GUIDE.md) — it walks you through everything from creating accounts to deploying the app, step by step.
+
 ## What You'll Learn
 
 - How to clone a repository from GitHub
