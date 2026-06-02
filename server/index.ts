@@ -3,7 +3,6 @@ import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
-import { createProxyMiddleware } from "http-proxy-middleware";
 
 const app = express();
 const log = console.log;
@@ -18,17 +17,6 @@ function setupCors(app: express.Application) {
   app.use((req, res, next) => {
     const origins = new Set<string>();
 
-    if (process.env.REPLIT_DEV_DOMAIN) {
-      origins.add(`https://${process.env.REPLIT_DEV_DOMAIN}`);
-    }
-
-    if (process.env.REPLIT_DOMAINS) {
-      process.env.REPLIT_DOMAINS.split(",").forEach((d) => {
-        origins.add(`https://${d.trim()}`);
-      });
-    }
-
-    // Generic allowed origins (comma-separated, e.g. for Railway/Render/etc.)
     if (process.env.ALLOWED_ORIGINS) {
       process.env.ALLOWED_ORIGINS.split(",").forEach((d) => {
         origins.add(d.trim());
@@ -37,7 +25,6 @@ function setupCors(app: express.Application) {
 
     const origin = req.header("origin");
 
-    // Allow localhost origins for Expo web development (any port)
     const isLocalhost =
       origin?.startsWith("http://localhost:") ||
       origin?.startsWith("http://127.0.0.1:");
@@ -116,45 +103,6 @@ function getAppName(): string {
   }
 }
 
-function serveExpoManifest(platform: string, req: Request, res: Response) {
-  const manifestPath = path.resolve(
-    process.cwd(),
-    "static-build",
-    platform,
-    "manifest.json",
-  );
-
-  if (!fs.existsSync(manifestPath)) {
-    return res
-      .status(404)
-      .json({ error: `Manifest not found for platform: ${platform}` });
-  }
-
-  res.setHeader("expo-protocol-version", "1");
-  res.setHeader("expo-sfv-version", "0");
-  res.setHeader("content-type", "application/json");
-
-  const manifestContent = fs.readFileSync(manifestPath, "utf-8");
-  
-  const forwardedProto = req.header("x-forwarded-proto");
-  const protocol = forwardedProto || req.protocol || "https";
-  const forwardedHost = req.header("x-forwarded-host");
-  const host = forwardedHost || req.get("host");
-  const currentBaseUrl = `${protocol}://${host}`;
-  
-  const urlPattern = /https?:\/\/[^/\s"]+/g;
-  const rewrittenManifest = manifestContent.replace(urlPattern, (match) => {
-    try {
-      const url = new URL(match);
-      return `${currentBaseUrl}${url.pathname}`;
-    } catch {
-      return match;
-    }
-  });
-  
-  res.send(rewrittenManifest);
-}
-
 function serveLandingPage({
   req,
   res,
@@ -173,9 +121,6 @@ function serveLandingPage({
   const baseUrl = `${protocol}://${host}`;
   const expsUrl = `${host}`;
 
-  log(`baseUrl`, baseUrl);
-  log(`expsUrl`, expsUrl);
-
   const html = landingPageTemplate
     .replace(/BASE_URL_PLACEHOLDER/g, baseUrl)
     .replace(/EXPS_URL_PLACEHOLDER/g, expsUrl)
@@ -185,7 +130,7 @@ function serveLandingPage({
   res.status(200).send(html);
 }
 
-function configureExpoAndLanding(app: express.Application) {
+function configureStaticServing(app: express.Application) {
   const templatePath = path.resolve(
     process.cwd(),
     "server",
@@ -196,33 +141,16 @@ function configureExpoAndLanding(app: express.Application) {
   const appName = getAppName();
   const webDistPath = path.resolve(process.cwd(), "dist");
 
-  log("Serving static Expo files with dynamic manifest routing");
-
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.path.startsWith("/api")) {
       return next();
     }
 
-    if (req.path !== "/" && req.path !== "/manifest") {
-      return next();
-    }
-
-    const platform = req.header("expo-platform");
-    if (platform && (platform === "ios" || platform === "android")) {
-      return serveExpoManifest(platform, req, res);
-    }
-
     if (req.path === "/") {
-      // In development, skip static build and fall through to the Metro proxy
-      if (process.env.NODE_ENV === "development") {
-        return next();
-      }
-      // Serve web app directly to browsers (production)
       const webIndexPath = path.join(webDistPath, "index.html");
       if (fs.existsSync(webIndexPath)) {
         return res.sendFile(webIndexPath);
       }
-      // Fallback to landing page if web build doesn't exist
       return serveLandingPage({
         req,
         res,
@@ -234,14 +162,8 @@ function configureExpoAndLanding(app: express.Application) {
     next();
   });
 
-  // Serve web build assets (skip in development — Metro serves everything)
-  if (process.env.NODE_ENV !== "development") {
-    app.use(express.static(webDistPath));
-    app.use(express.static(path.resolve(process.cwd(), "static-build")));
-  }
+  app.use(express.static(webDistPath));
   app.use("/assets", express.static(path.resolve(process.cwd(), "assets")));
-
-  log("Expo routing: Checking expo-platform header on / and /manifest");
 }
 
 function setupErrorHandler(app: express.Application) {
@@ -270,22 +192,11 @@ function setupErrorHandler(app: express.Application) {
   setupBodyParsing(app);
   setupRequestLogging(app);
 
-  configureExpoAndLanding(app);
+  configureStaticServing(app);
 
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
-
-  // In development, proxy all non-API requests to the Metro web dev server
-  if (process.env.NODE_ENV === "development") {
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      if (req.path.startsWith("/api")) return next();
-      createProxyMiddleware({
-        target: "http://localhost:8081",
-        changeOrigin: true,
-      })(req, res, next);
-    });
-  }
 
   const port = parseInt(process.env.PORT || "5000", 10);
   server.listen(port, "0.0.0.0", () => {
